@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graph API Result</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            padding: 2.5rem;
+            max-width: 520px;
+            width: 100%;
+        }
+        h1 { font-size: 1.4rem; margin-bottom: 0.5rem; color: #333; text-align: center; }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+        }
+        .badge-cache  { background: #e6f4ea; color: #1e7e34; }
+        .badge-idp    { background: #fff3cd; color: #856404; }
+        .token-note { text-align: center; margin-bottom: 1.25rem; }
+        .token-note p { color: #666; font-size: 0.85rem; margin-top: 0.25rem; }
+        .profile-data {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+        }
+        .profile-data dt { font-weight: 600; color: #333; margin-top: 0.6rem; }
+        .profile-data dt:first-child { margin-top: 0; }
+        .profile-data dd { color: #555; word-break: break-all; }
+        .btn {
+            display: inline-block;
+            padding: 0.6rem 1.4rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            text-decoration: none;
+            color: #fff;
+        }
+        .btn-secondary { background: #6c757d; }
+        .btn-secondary:hover { background: #5a6268; }
+        .btn-primary   { background: #0078d4; }
+        .btn-primary:hover { background: #106ebe; }
+        .btn-group { display: flex; justify-content: center; gap: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Microsoft Graph /me</h1>
+
+        <div class="token-note">
+            {% if token_source == "cache" %}
+                <span class="badge badge-cache">Token from cache</span>
+                <p>Access token was still valid — returned instantly from MSAL cache, no network call to Azure AD.</p>
+            {% elif token_source == "identity_provider" %}
+                <span class="badge badge-idp">Token refreshed silently</span>
+                <p>Access token had expired — MSAL used the refresh token to obtain a new one from Azure AD in the background.</p>
+            {% else %}
+                <span class="badge badge-idp">Token source: {{ token_source }}</span>
+            {% endif %}
+        </div>
+
+        <dl class="profile-data">
+            {% if profile.get("error") %}
+                <dt>Error</dt>
+                <dd>{{ profile.get("error") }}</dd>
+                <dt>Message</dt>
+                <dd>{{ profile.get("message", "N/A") }}</dd>
+            {% else %}
+                <dt>Display Name</dt>
+                <dd>{{ profile.get("displayName", "N/A") }}</dd>
+                <dt>Email</dt>
+                <dd>{{ profile.get("mail") or profile.get("userPrincipalName", "N/A") }}</dd>
+                <dt>Job Title</dt>
+                <dd>{{ profile.get("jobTitle") or "N/A" }}</dd>
+                <dt>Office Location</dt>
+                <dd>{{ profile.get("officeLocation") or "N/A" }}</dd>
+                <dt>ID</dt>
+                <dd>{{ profile.get("id", "N/A") }}</dd>
+            {% endif %}
+        </dl>
+
+        <div class="btn-group">
+            <a href="/call-graph" class="btn btn-primary">Call again</a>
+            <a href="/" class="btn btn-secondary">Back</a>
+        </div>
+    </div>
+</body>
+</html>

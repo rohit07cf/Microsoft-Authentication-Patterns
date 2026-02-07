@@ -2,6 +2,7 @@ import os
 import uuid
 
 import msal
+import requests as http_requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -16,6 +17,7 @@ TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
 REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/callback")
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["User.Read"]
+GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me"
 
 # Secret key used to sign the session cookie
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me-in-production")
@@ -28,12 +30,19 @@ templates = Jinja2Templates(directory="templates")
 # A production app would use a real session store (Redis, database, etc.).
 _sessions: dict[str, dict] = {}
 
+# Shared MSAL token cache – keeps access and refresh tokens across requests.
+# In production, use a distributed cache (Redis, database) so tokens survive
+# restarts and work across multiple app instances.
+_token_cache = msal.SerializableTokenCache()
+
 
 def _build_msal_app() -> msal.ConfidentialClientApplication:
+    """Build an MSAL client that shares a single token cache."""
     return msal.ConfidentialClientApplication(
         CLIENT_ID,
         authority=AUTHORITY,
         client_credential=CLIENT_SECRET,
+        token_cache=_token_cache,
     )
 
 
@@ -106,11 +115,71 @@ async def callback(request: Request):
             status_code=400,
         )
 
-    # Store user claims from the ID token.
+    # Store user claims and the home_account_id for silent token lookups.
     session["user"] = result.get("id_token_claims", {})
+    session["home_account_id"] = result.get("id_token_claims", {}).get("oid")
     session.pop("flow", None)
 
     return RedirectResponse("/")
+
+
+@app.get("/call-graph")
+async def call_graph(request: Request):
+    """Silently acquire an access token and call Microsoft Graph /me."""
+    session_id = _get_session_id(request)
+    session = _sessions.get(session_id) if session_id else None
+
+    if session is None or "home_account_id" not in session:
+        return RedirectResponse("/")
+
+    cca = _build_msal_app()
+
+    # Look up the account from the MSAL cache using the stored identifier.
+    accounts = cca.get_accounts()
+    account = next(
+        (a for a in accounts if a.get("local_account_id") == session["home_account_id"]),
+        None,
+    )
+
+    if account is None:
+        # Account not in cache – need a fresh interactive sign-in.
+        return RedirectResponse("/login")
+
+    # Attempt a silent token acquisition.
+    # MSAL will return the cached access token if still valid, or use the
+    # refresh token to obtain a new one – no user interaction required.
+    result = cca.acquire_token_silent(scopes=SCOPES, account=account)
+
+    if not result or "access_token" not in result:
+        # Silent refresh failed (e.g. refresh token expired/revoked).
+        # Fall back to interactive sign-in.
+        return RedirectResponse("/login")
+
+    token_source = result.get("token_source", "unknown")
+
+    # Call the Microsoft Graph API with the access token.
+    graph_response = http_requests.get(
+        GRAPH_ENDPOINT,
+        headers={"Authorization": f"Bearer {result['access_token']}"},
+        timeout=10,
+    )
+
+    if graph_response.ok:
+        profile = graph_response.json()
+    else:
+        profile = {
+            "error": graph_response.status_code,
+            "message": graph_response.text,
+        }
+
+    return templates.TemplateResponse(
+        "graph_result.html",
+        {
+            "request": request,
+            "profile": profile,
+            "token_source": token_source,
+        },
+    )
 
 
 @app.get("/logout")
