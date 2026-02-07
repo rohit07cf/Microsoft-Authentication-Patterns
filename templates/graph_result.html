@@ -68,11 +68,11 @@
 
         <div class="token-note">
             {% if token_source == "cache" %}
-                <span class="badge badge-cache">Token from cache</span>
-                <p>Access token was still valid — returned instantly from MSAL cache, no network call to Azure AD.</p>
+                <span class="badge badge-cache">Token from cache (instant)</span>
+                <p>Access token was already fresh in MSAL cache — most likely kept warm by the proactive background refresh task. No network call to Azure AD.</p>
             {% elif token_source == "identity_provider" %}
-                <span class="badge badge-idp">Token refreshed silently</span>
-                <p>Access token had expired — MSAL used the refresh token to obtain a new one from Azure AD in the background.</p>
+                <span class="badge badge-idp">Token refreshed just-in-time</span>
+                <p>Access token had expired before the background task could refresh it — MSAL used the refresh token to obtain a new one from Azure AD on this request.</p>
             {% else %}
                 <span class="badge badge-idp">Token source: {{ token_source }}</span>
             {% endif %}

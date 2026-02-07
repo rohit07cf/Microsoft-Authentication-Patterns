@@ -162,10 +162,52 @@ App                              MSAL Cache                     Azure AD
 
 This is why the Authorization Code flow is recommended — a single interactive sign-in gives the app long-lived refresh capability, keeping the user experience seamless.
 
+### Proactive token refresh
+
+Rather than waiting for a request to discover an expired token, this POC runs a **background task** that monitors the MSAL token cache and refreshes access tokens *before* they expire.
+
+**How it works:**
+
+1. On app startup, an `asyncio` background loop begins running every `TOKEN_REFRESH_CHECK_INTERVAL_SECS` (default **60 s**).
+2. Each cycle, it deserialises the `SerializableTokenCache`, walks every cached access token, and checks its `expires_on` timestamp.
+3. If any token will expire within `TOKEN_REFRESH_BUFFER_SECS` (default **5 minutes**), the task calls `acquire_token_silent(force_refresh=True)` to obtain a fresh access token using the refresh token — no user interaction.
+4. When `/call-graph` is hit, `acquire_token_silent()` returns the already-refreshed token instantly from cache (`token_source="cache"`).
+
+```
+Background Task                  MSAL Cache                     Azure AD
+ │                                  │                               │
+ │  [every 60s] check expires_on    │                               │
+ │ ────────────────────────────────>│                               │
+ │                                  │                               │
+ │  Token expires in < 5 min?       │                               │
+ │  acquire_token_silent(           │                               │
+ │    force_refresh=True)           │                               │
+ │ ────────────────────────────────>│  POST /token (refresh_token)  │
+ │                                  │ ─────────────────────────────>│
+ │                                  │  new access + refresh token   │
+ │                                  │ <─────────────────────────────│
+ │  Cache updated with fresh token  │                               │
+ │ <────────────────────────────────│                               │
+ │                                                                  │
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │                                                                  │
+App (on user request)            MSAL Cache                         │
+ │                                  │                               │
+ │  acquire_token_silent()          │                               │
+ │ ────────────────────────────────>│                               │
+ │ <── instant cache hit ───────────│  (no network call needed)     │
+```
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `TOKEN_REFRESH_BUFFER_SECS` | `300` | Refresh a token when it has fewer than this many seconds left before expiry. |
+| `TOKEN_REFRESH_CHECK_INTERVAL_SECS` | `60` | How often (in seconds) the background task scans the cache. |
+
 ### Key implementation details
 
 - **MSAL `ConfidentialClientApplication`** handles all OAuth complexity — token requests, PKCE, nonce validation.
 - **`initiate_auth_code_flow()`** generates the authorization URL with the correct `state`, `nonce`, and `code_challenge` parameters.
 - **`acquire_token_by_auth_code_flow()`** validates the response, exchanges the authorization code, and returns the ID token claims and access token.
 - **`acquire_token_silent()`** retrieves cached tokens or silently refreshes them using the refresh token — no user interaction required.
+- **Proactive background refresh** deserialises the token cache, checks `expires_on` timestamps, and calls `acquire_token_silent(force_refresh=True)` before tokens expire so every user request gets an instant cache hit.
 - **Session management** uses a signed cookie (via `itsdangerous`) pointing to server-side state. A production app should use Redis or a database-backed session store.

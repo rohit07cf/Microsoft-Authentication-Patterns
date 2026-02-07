@@ -1,4 +1,8 @@
+import asyncio
+import json
+import logging
 import os
+import time
 import uuid
 
 import msal
@@ -19,9 +23,18 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["User.Read"]
 GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me"
 
+# Refresh the token when it has less than this many seconds remaining.
+# Default 5 minutes — gives a comfortable buffer before actual expiry.
+TOKEN_REFRESH_BUFFER_SECS = int(os.getenv("TOKEN_REFRESH_BUFFER_SECS", "300"))
+
+# How often the background task checks the cache for soon-to-expire tokens.
+TOKEN_REFRESH_CHECK_INTERVAL_SECS = int(os.getenv("TOKEN_REFRESH_CHECK_INTERVAL_SECS", "60"))
+
 # Secret key used to sign the session cookie
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me-in-production")
 serializer = URLSafeSerializer(SESSION_SECRET)
+
+logger = logging.getLogger("msal_auth")
 
 app = FastAPI(title="MSAL Auth Code Flow POC")
 templates = Jinja2Templates(directory="templates")
@@ -54,6 +67,95 @@ def _get_session_id(request: Request) -> str | None:
         return serializer.loads(cookie)
     except Exception:
         return None
+
+
+# ---------- Proactive token refresh ----------------------------------------
+
+
+def _proactive_refresh() -> None:
+    """Inspect the MSAL token cache and silently refresh any access token
+    that is about to expire within ``TOKEN_REFRESH_BUFFER_SECS``.
+
+    The MSAL ``SerializableTokenCache`` stores tokens as a JSON dict.
+    We deserialise it, walk every cached access token, check its
+    ``expires_on`` timestamp, and call ``acquire_token_silent()`` for any
+    token that will expire soon.  MSAL then uses the corresponding
+    refresh token to obtain a fresh access token in the background —
+    no user interaction required.
+    """
+    cache_snapshot = _token_cache.serialize()
+    if not cache_snapshot:
+        return
+
+    cache_data = json.loads(cache_snapshot)
+    access_tokens = cache_data.get("AccessToken", {})
+    if not access_tokens:
+        return
+
+    now = time.time()
+    cca = _build_msal_app()
+    accounts = cca.get_accounts()
+
+    for _key, token_entry in access_tokens.items():
+        expires_on = int(token_entry.get("expires_on", 0))
+        remaining = expires_on - now
+
+        if remaining > TOKEN_REFRESH_BUFFER_SECS:
+            # Token still has plenty of time — skip.
+            continue
+
+        if remaining <= 0:
+            logger.info("Access token already expired, attempting silent refresh")
+        else:
+            logger.info(
+                "Access token expires in %d s (< %d s buffer), refreshing proactively",
+                int(remaining),
+                TOKEN_REFRESH_BUFFER_SECS,
+            )
+
+        # Find the matching account using the home_account_id stored in the
+        # token entry (format: "<oid>.<tid>").
+        home_id = token_entry.get("home_account_id", "")
+        account = next((a for a in accounts if a.get("home_account_id") == home_id), None)
+        if account is None:
+            continue
+
+        # Force a refresh by passing force_refresh=True so MSAL ignores the
+        # cached access token and uses the refresh token immediately.
+        result = cca.acquire_token_silent(
+            scopes=SCOPES,
+            account=account,
+            force_refresh=True,
+        )
+
+        if result and "access_token" in result:
+            logger.info("Proactively refreshed token for account %s", home_id)
+        else:
+            logger.warning(
+                "Proactive refresh failed for account %s: %s",
+                home_id,
+                result.get("error", "unknown") if result else "no result",
+            )
+
+
+async def _proactive_refresh_loop() -> None:
+    """Background loop that periodically checks for soon-to-expire tokens."""
+    while True:
+        await asyncio.sleep(TOKEN_REFRESH_CHECK_INTERVAL_SECS)
+        try:
+            _proactive_refresh()
+        except Exception:
+            logger.exception("Error during proactive token refresh")
+
+
+@app.on_event("startup")
+async def _start_proactive_refresh() -> None:
+    asyncio.create_task(_proactive_refresh_loop())
+    logger.info(
+        "Proactive token refresh started (buffer=%ds, interval=%ds)",
+        TOKEN_REFRESH_BUFFER_SECS,
+        TOKEN_REFRESH_CHECK_INTERVAL_SECS,
+    )
 
 
 # ---------- Routes ----------------------------------------------------------
@@ -125,7 +227,14 @@ async def callback(request: Request):
 
 @app.get("/call-graph")
 async def call_graph(request: Request):
-    """Silently acquire an access token and call Microsoft Graph /me."""
+    """Silently acquire an access token and call Microsoft Graph /me.
+
+    Thanks to the proactive refresh background task, the token in the
+    cache is almost always fresh.  ``acquire_token_silent()`` will
+    return it instantly from cache (``token_source="cache"``).  If the
+    background task hasn't run yet, MSAL falls back to a just-in-time
+    refresh using the refresh token (``token_source="identity_provider"``).
+    """
     session_id = _get_session_id(request)
     session = _sessions.get(session_id) if session_id else None
 
@@ -146,8 +255,8 @@ async def call_graph(request: Request):
         return RedirectResponse("/login")
 
     # Attempt a silent token acquisition.
-    # MSAL will return the cached access token if still valid, or use the
-    # refresh token to obtain a new one – no user interaction required.
+    # Because the background task proactively refreshes tokens before expiry,
+    # this will almost always be an instant cache hit.
     result = cca.acquire_token_silent(scopes=SCOPES, account=account)
 
     if not result or "access_token" not in result:
