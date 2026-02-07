@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSAL Auth Code Flow POC</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            padding: 2.5rem;
+            max-width: 420px;
+            width: 100%;
+            text-align: center;
+        }
+        h1 { font-size: 1.4rem; margin-bottom: 0.5rem; color: #333; }
+        p  { color: #666; margin-bottom: 1.5rem; font-size: 0.95rem; }
+        .btn {
+            display: inline-block;
+            padding: 0.7rem 1.6rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            text-decoration: none;
+            color: #fff;
+        }
+        .btn-primary   { background: #0078d4; }
+        .btn-primary:hover { background: #106ebe; }
+        .btn-danger     { background: #d9534f; }
+        .btn-danger:hover  { background: #c9302c; }
+        .user-info { text-align: left; margin-bottom: 1.5rem; }
+        .user-info dt { font-weight: 600; color: #333; margin-top: 0.75rem; }
+        .user-info dd { color: #555; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        {% if user %}
+            <h1>Welcome</h1>
+            <dl class="user-info">
+                <dt>Name</dt>
+                <dd>{{ user.get("name", "N/A") }}</dd>
+                <dt>Email</dt>
+                <dd>{{ user.get("preferred_username", "N/A") }}</dd>
+                <dt>Object ID</dt>
+                <dd>{{ user.get("oid", "N/A") }}</dd>
+                <dt>Tenant ID</dt>
+                <dd>{{ user.get("tid", "N/A") }}</dd>
+            </dl>
+            <a href="/logout" class="btn btn-danger">Sign out</a>
+        {% else %}
+            <h1>MSAL Auth Code Flow POC</h1>
+            <p>Sign in with your Microsoft account to test the Authorization Code flow.</p>
+            <a href="/login" class="btn btn-primary">Sign in with Microsoft</a>
+        {% endif %}
+    </div>
+</body>
+</html>
