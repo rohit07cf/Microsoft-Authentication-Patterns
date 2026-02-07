@@ -120,9 +120,52 @@ docker build -t msal-auth-code-poc .
 docker run --env-file .env -p 8000:8000 msal-auth-code-poc
 ```
 
+### Token lifetimes
+
+After a successful Authorization Code flow, Azure AD returns the following tokens:
+
+| Token | Default Lifetime | Purpose |
+|---|---|---|
+| **Access token** | **60–90 minutes** (typically ~1 hour) | Short-lived credential sent with each API request. Grants access to the scopes the user consented to. |
+| **Refresh token** | **90 days** (sliding window, extended on use up to a max of 90 days of inactivity) | Long-lived credential stored server-side. Used to obtain new access tokens without user interaction. |
+| **ID token** | **~1 hour** | Contains user profile claims. Used for session establishment, not for API calls. |
+
+> These are the Microsoft identity platform defaults. Admins can customize lifetimes via [Token Lifetime Policies](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes) or Conditional Access.
+
+### Silent token refresh
+
+Users should **not** have to sign in every time an access token expires. MSAL handles this automatically:
+
+1. **Initial sign-in** — The Authorization Code flow returns an access token *and* a refresh token. MSAL caches both.
+2. **On the next API call** — The app calls `acquire_token_silent()`. MSAL checks its cache:
+   - If the access token is still valid, it is returned immediately (no network call).
+   - If the access token has expired, MSAL uses the refresh token to request a new access token from Azure AD in the background.
+3. **User is never prompted** — This cycle repeats silently for as long as the refresh token is valid (~90 days of activity).
+4. **Refresh token expires** — Only when the user has been inactive for 90 days (or the token is revoked by an admin) does MSAL return `None`, signaling the app to trigger a new interactive sign-in.
+
+```
+App                              MSAL Cache                     Azure AD
+ │                                  │                               │
+ │  acquire_token_silent()          │                               │
+ │ ────────────────────────────────>│                               │
+ │                                  │                               │
+ │  Cache hit (token still valid)?  │                               │
+ │ <─ YES ── return access token ───│                               │
+ │                                  │                               │
+ │  Cache miss (token expired)?     │                               │
+ │               ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌>│  POST /token (refresh_token) │
+ │                                  │ ─────────────────────────────>│
+ │                                  │  new access token + refresh   │
+ │                                  │ <─────────────────────────────│
+ │ <─── return new access token ────│                               │
+```
+
+This is why the Authorization Code flow is recommended — a single interactive sign-in gives the app long-lived refresh capability, keeping the user experience seamless.
+
 ### Key implementation details
 
 - **MSAL `ConfidentialClientApplication`** handles all OAuth complexity — token requests, PKCE, nonce validation.
 - **`initiate_auth_code_flow()`** generates the authorization URL with the correct `state`, `nonce`, and `code_challenge` parameters.
 - **`acquire_token_by_auth_code_flow()`** validates the response, exchanges the authorization code, and returns the ID token claims and access token.
+- **`acquire_token_silent()`** retrieves cached tokens or silently refreshes them using the refresh token — no user interaction required.
 - **Session management** uses a signed cookie (via `itsdangerous`) pointing to server-side state. A production app should use Redis or a database-backed session store.
